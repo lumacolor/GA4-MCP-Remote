@@ -7,9 +7,15 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 FROM base AS builder
+# Dependencies come from requirements.lock (generated from uv.lock), not from the
+# open ranges in pyproject.toml. Without this the image resolves fresh on every
+# build, so rebuilding the same commit could produce a different image -- which
+# defeats per-customer rollback by version tag.
+COPY requirements.lock ./
+RUN pip install --upgrade pip && pip install --require-hashes -r requirements.lock
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --upgrade pip && pip install .
+RUN pip install --no-deps .
 
 FROM base AS runtime
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
