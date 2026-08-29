@@ -53,6 +53,9 @@ def validate_tool_arguments(
     if tool_name == "run_realtime_report" and not settings.enable_realtime:
         return False, "tool_disabled", None
 
+    if tool_name == "list_google_ads_links" and not settings.enable_google_ads_links:
+        return False, "tool_disabled", None
+
     if tool_name == "run_report":
         dr = args.get("date_ranges")
         if isinstance(dr, list) and dr:

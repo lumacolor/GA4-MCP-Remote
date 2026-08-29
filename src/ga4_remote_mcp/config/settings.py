@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     max_row_limit: int = Field(default=100_000, ge=1, le=250_000)
     max_concurrent_per_property: int = Field(default=4, ge=1)
     enable_realtime: bool = True
+    enable_google_ads_links: bool = False
     return_property_quota_default: bool = False
     request_timeout_ms: int = Field(default=60_000, ge=1000)
 

@@ -45,3 +45,22 @@ def test_realtime_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     ok, code, _ = validate_tool_arguments("run_realtime_report", {}, s)
     assert ok is False
     assert code == "tool_disabled"
+
+
+def test_google_ads_links_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Google Ads links are out of scope for this deployment (see docs/code-review.md)."""
+    monkeypatch.delenv("GA4MCP_ENABLE_GOOGLE_ADS_LINKS", raising=False)
+    clear_settings_cache()
+    s = get_settings()
+    ok, code, _ = validate_tool_arguments("list_google_ads_links", {"property_id": "1"}, s)
+    assert ok is False
+    assert code == "tool_disabled"
+
+
+def test_google_ads_links_can_be_re_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GA4MCP_ENABLE_GOOGLE_ADS_LINKS", "true")
+    clear_settings_cache()
+    s = get_settings()
+    ok, code, _ = validate_tool_arguments("list_google_ads_links", {"property_id": "1"}, s)
+    assert ok is True
+    assert code is None

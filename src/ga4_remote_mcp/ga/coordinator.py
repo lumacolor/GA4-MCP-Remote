@@ -90,12 +90,21 @@ for tool in mcp_tools:
             del prop["type"]
 
 
+DISABLEABLE_TOOLS = {
+    "run_realtime_report": "enable_realtime",
+    "list_google_ads_links": "enable_google_ads_links",
+}
+
+
+def _tool_enabled(name: str, settings: object) -> bool:
+    flag = DISABLEABLE_TOOLS.get(name)
+    return True if flag is None else bool(getattr(settings, flag))
+
+
 @app.list_tools()
 async def list_tools() -> list[mcp_types.Tool]:
     settings = get_settings()
-    if settings.enable_realtime:
-        return mcp_tools
-    return [t for t in mcp_tools if t.name != "run_realtime_report"]
+    return [t for t in mcp_tools if _tool_enabled(t.name, settings)]
 
 
 @app.call_tool()
@@ -140,14 +149,15 @@ async def call_mcp_tool(name: str, arguments: dict) -> list[mcp_types.Content]:
             )
         ]
 
-    if name == "run_realtime_report" and not settings.enable_realtime:
+    if not _tool_enabled(name, settings):
+        env_var = "GA4MCP_" + DISABLEABLE_TOOLS[name].upper()
         emit(status="error", error_code="tool_disabled")
         return [
             mcp_types.TextContent(
                 type="text",
                 text=tool_error_payload(
                     code="tool_disabled",
-                    message="run_realtime_report is disabled by GA4MCP_ENABLE_REALTIME",
+                    message=f"{name} is disabled by {env_var}",
                 ),
             )
         ]
