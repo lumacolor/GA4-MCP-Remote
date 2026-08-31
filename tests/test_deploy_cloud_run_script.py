@@ -47,6 +47,28 @@ def _make_stub_bin(tmp_path: pathlib.Path) -> pathlib.Path:
     return stub_bin
 
 
+VALID_IMAGE = "europe-west3-docker.pkg.dev/dummy-project/ga4-mcp/ga4-remote-mcp:v0.1.0"
+DUMMY_SA = "ga4-mcp-test@dummy-project.iam.gserviceaccount.com"
+
+
+def _base_env(stub_bin: pathlib.Path) -> dict[str, str]:
+    """Every variable the script requires, so a test can drop exactly one."""
+    return {
+        "PATH": f"{stub_bin}:{_safe_path()}",
+        "GCP_PROJECT_ID": "dummy-project",
+        "GA4MCP_ALLOWED_PROPERTY_IDS": "123456789",
+        "GA4MCP_IMAGE": VALID_IMAGE,
+        "CLOUD_RUN_SERVICE_ACCOUNT": DUMMY_SA,
+        "GA4MCP_BEARER_SECRET_NAME": "ga4-remote-mcp-bearer",
+    }
+
+
+def _run(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=10
+    )
+
+
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None,
     reason="bash is required for shell-script smoke tests",
@@ -65,19 +87,9 @@ def test_script_passes_static_syntax_check() -> None:
 
 
 def test_script_blocks_when_bearer_secret_unset(tmp_path: pathlib.Path) -> None:
-    stub_bin = _make_stub_bin(tmp_path)
-    env = {
-        "PATH": f"{stub_bin}:{_safe_path()}",
-        "GCP_PROJECT_ID": "dummy-project",
-        "GA4MCP_ALLOWED_PROPERTY_IDS": "123456789",
-    }
-    result = subprocess.run(
-        ["bash", str(SCRIPT)],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    env = _base_env(_make_stub_bin(tmp_path))
+    del env["GA4MCP_BEARER_SECRET_NAME"]
+    result = _run(env)
     assert result.returncode != 0
     assert "GA4MCP_BEARER_SECRET_NAME" in result.stderr
     combined = result.stdout + result.stderr
@@ -87,20 +99,7 @@ def test_script_blocks_when_bearer_secret_unset(tmp_path: pathlib.Path) -> None:
 
 
 def test_script_passes_guard_when_bearer_secret_set(tmp_path: pathlib.Path) -> None:
-    stub_bin = _make_stub_bin(tmp_path)
-    env = {
-        "PATH": f"{stub_bin}:{_safe_path()}",
-        "GCP_PROJECT_ID": "dummy-project",
-        "GA4MCP_ALLOWED_PROPERTY_IDS": "123456789",
-        "GA4MCP_BEARER_SECRET_NAME": "ga4-remote-mcp-bearer",
-    }
-    result = subprocess.run(
-        ["bash", str(SCRIPT)],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    result = _run(_base_env(_make_stub_bin(tmp_path)))
     combined = result.stdout + result.stderr
     # Guard must NOT have fired (bearer secret is set), and the script
     # must have reached the first gcloud call (intercepted by the stub).
@@ -108,3 +107,38 @@ def test_script_passes_guard_when_bearer_secret_set(tmp_path: pathlib.Path) -> N
     assert STUB_GCLOUD_MARKER in combined
     # The stub returns 127, and ``set -e`` propagates that.
     assert result.returncode != 0
+
+
+def test_script_blocks_without_service_account(tmp_path: pathlib.Path) -> None:
+    """Deploying without an explicit SA would silently use the default compute SA."""
+    env = _base_env(_make_stub_bin(tmp_path))
+    del env["CLOUD_RUN_SERVICE_ACCOUNT"]
+    result = _run(env)
+    assert result.returncode != 0
+    assert "CLOUD_RUN_SERVICE_ACCOUNT" in result.stderr
+    assert STUB_GCLOUD_MARKER not in result.stdout + result.stderr
+
+
+def test_script_blocks_without_image(tmp_path: pathlib.Path) -> None:
+    env = _base_env(_make_stub_bin(tmp_path))
+    del env["GA4MCP_IMAGE"]
+    result = _run(env)
+    assert result.returncode != 0
+    assert "GA4MCP_IMAGE" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "europe-west3-docker.pkg.dev/p/r/ga4-remote-mcp:latest",
+        "europe-west3-docker.pkg.dev/p/r/ga4-remote-mcp",
+    ],
+)
+def test_script_rejects_unversioned_image(tmp_path: pathlib.Path, image: str) -> None:
+    """Per-customer rollback needs a tag that keeps pointing at the same build."""
+    env = _base_env(_make_stub_bin(tmp_path))
+    env["GA4MCP_IMAGE"] = image
+    result = _run(env)
+    assert result.returncode != 0
+    assert "version tag" in result.stderr
+    assert STUB_GCLOUD_MARKER not in result.stdout + result.stderr

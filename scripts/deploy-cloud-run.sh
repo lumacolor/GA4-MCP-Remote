@@ -15,10 +15,38 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-PROJECT_ID="${GCP_PROJECT_ID:?環境変数 GCP_PROJECT_ID をセットしてください}"
-REGION="${GCP_REGION:-asia-northeast1}"
+PROJECT_ID="${GCP_PROJECT_ID:?Set GCP_PROJECT_ID}"
+REGION="${GCP_REGION:-europe-west3}"
 SERVICE="${CLOUD_RUN_SERVICE:-ga4-remote-mcp}"
-ALLOWED="${GA4MCP_ALLOWED_PROPERTY_IDS:?GA4MCP_ALLOWED_PROPERTY_IDS をセット（例: 123456789 または 111,222）}"
+ALLOWED="${GA4MCP_ALLOWED_PROPERTY_IDS:?Set GA4MCP_ALLOWED_PROPERTY_IDS (e.g. 123456789 or 111,222)}"
+
+# Deploy a pre-built, tagged image rather than building from source.
+# Building at deploy time means the artifact is not the one that was tested,
+# and there is no earlier tag to roll a single customer back to.
+IMAGE="${GA4MCP_IMAGE:?Set GA4MCP_IMAGE to a tagged image, e.g. europe-west3-docker.pkg.dev/PROJECT/ga4-mcp/ga4-remote-mcp:v0.1.0}"
+if [[ "$IMAGE" == *:latest || "$IMAGE" != *:* ]]; then
+  echo "ERROR: GA4MCP_IMAGE must carry an explicit version tag, not 'latest' and not untagged." >&2
+  echo "       Rollback for a single customer depends on it." >&2
+  exit 1
+fi
+
+# Each customer gets their own service account, which is the only thing that
+# grants GA4 access. Without it Cloud Run silently falls back to the default
+# compute service account -- a shared, broadly privileged identity. That would
+# break tenant isolation, so refuse instead of defaulting.
+if [[ -z "${CLOUD_RUN_SERVICE_ACCOUNT:-}" ]]; then
+  cat >&2 <<'MSG'
+ERROR: CLOUD_RUN_SERVICE_ACCOUNT is not set.
+
+Deploying without it runs the service as the project's default compute
+service account, which is shared across services and broadly privileged.
+Tenant isolation in this deployment model depends on one dedicated service
+account per customer, so this script refuses to deploy without one.
+
+    export CLOUD_RUN_SERVICE_ACCOUNT="ga4-mcp-<customer>@$GCP_PROJECT_ID.iam.gserviceaccount.com"
+MSG
+  exit 1
+fi
 
 # Production-auth guard
 # This script always sets GA4MCP_ENV=production, which now refuses to start
@@ -75,18 +103,17 @@ gcloud config set project "$PROJECT_ID"
 DEPLOY_ARGS=(
   gcloud run deploy "$SERVICE"
   --region="$REGION"
-  --source=.
+  --image="$IMAGE"
   --platform=managed
   --allow-unauthenticated
   --port=8080
   --memory=512Mi
   --timeout=300
-  --max-instances=3
+  --min-instances=0
+  --max-instances=1
+  --service-account="$CLOUD_RUN_SERVICE_ACCOUNT"
   --env-vars-file="$ENV_FILE"
 )
-if [[ -n "${CLOUD_RUN_SERVICE_ACCOUNT:-}" ]]; then
-  DEPLOY_ARGS+=(--service-account="$CLOUD_RUN_SERVICE_ACCOUNT")
-fi
 
 # GA4MCP_BEARER_SECRET_NAME はガードで必須化済み。
 DEPLOY_ARGS+=(
@@ -95,5 +122,17 @@ DEPLOY_ARGS+=(
 
 "${DEPLOY_ARGS[@]}"
 
+SERVICE_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')"
+SERVICE_HOST="${SERVICE_URL#https://}"
+
+# The Cloud Run hostname is only known after the first deploy, so DNS rebinding
+# protection is switched on in a second pass once we can name the allowed host.
+echo "Enabling DNS rebinding protection for host: $SERVICE_HOST"
+gcloud run services update "$SERVICE" \
+  --region="$REGION" \
+  --update-env-vars="GA4MCP_ENABLE_DNS_REBINDING_PROTECTION=true,GA4MCP_ALLOWED_HOSTS=${SERVICE_HOST}" \
+  --quiet
+
+echo
 echo "Deployed. Service URL:"
-gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)'
+echo "$SERVICE_URL"
