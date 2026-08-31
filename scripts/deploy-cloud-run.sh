@@ -125,12 +125,26 @@ DEPLOY_ARGS+=(
 SERVICE_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')"
 SERVICE_HOST="${SERVICE_URL#https://}"
 
-# The Cloud Run hostname is only known after the first deploy, so DNS rebinding
-# protection is switched on in a second pass once we can name the allowed host.
-echo "Enabling DNS rebinding protection for host: $SERVICE_HOST"
+# Cloud Run answers on two hostnames: the hashed one that `describe` reports,
+# and a deterministic <service>-<project-number>.<region>.run.app. Only the
+# first is discoverable through the API, so the second has to be derived --
+# leaving it out makes every /mcp request to it fail with 421 while /health
+# still answers 200, which is a confusing way to find out.
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+SERVICE_HOST_ALT="${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
+ALLOWED_HOSTS_VALUE="${SERVICE_HOST},${SERVICE_HOST_ALT}"
+
+# The hostnames only exist after the first deploy, so DNS rebinding protection
+# is switched on in a second pass once we can name the allowed hosts.
+echo "Enabling DNS rebinding protection for hosts:"
+echo "  $SERVICE_HOST"
+echo "  $SERVICE_HOST_ALT"
+# The value is comma-separated because settings.parsed_allowed_hosts splits on
+# commas; the ^|^ prefix tells gcloud to split env vars on | instead, so the
+# commas inside the value survive.
 gcloud run services update "$SERVICE" \
   --region="$REGION" \
-  --update-env-vars="GA4MCP_ENABLE_DNS_REBINDING_PROTECTION=true,GA4MCP_ALLOWED_HOSTS=${SERVICE_HOST}" \
+  --update-env-vars="^|^GA4MCP_ALLOWED_HOSTS=${ALLOWED_HOSTS_VALUE}|GA4MCP_ENABLE_DNS_REBINDING_PROTECTION=true" \
   --quiet
 
 echo
