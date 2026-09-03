@@ -107,8 +107,36 @@ async def list_tools() -> list[mcp_types.Tool]:
     return [t for t in mcp_tools if _tool_enabled(t.name, settings)]
 
 
+def _error_result(
+    code: str,
+    message: str,
+    extra: dict[str, object] | None = None,
+) -> mcp_types.CallToolResult:
+    """Return a tool error that clients can detect without parsing the payload.
+
+    Policy denials used to come back as a normal successful result whose text
+    happened to contain an error object. Clients that do not parse the text --
+    n8n's MCP node among them -- treated a rejected property as a successful
+    empty answer, so a scheduled report would quietly say "no data" instead of
+    surfacing a broken configuration.
+
+    The payload shape is unchanged; only isError is added.
+    """
+    return mcp_types.CallToolResult(
+        content=[
+            mcp_types.TextContent(
+                type="text",
+                text=tool_error_payload(code=code, message=message, extra=extra),
+            )
+        ],
+        isError=True,
+    )
+
+
 @app.call_tool()
-async def call_mcp_tool(name: str, arguments: dict) -> list[mcp_types.Content]:
+async def call_mcp_tool(
+    name: str, arguments: dict
+) -> list[mcp_types.Content] | mcp_types.CallToolResult:
     settings = get_settings()
     rid = request_id_var.get()
     t0 = time.perf_counter()
@@ -139,68 +167,31 @@ async def call_mcp_tool(name: str, arguments: dict) -> list[mcp_types.Content]:
 
     if name not in tool_map:
         emit(status="error", error_code="invalid_request")
-        return [
-            mcp_types.TextContent(
-                type="text",
-                text=tool_error_payload(
-                    code="invalid_request",
-                    message=f"Tool '{name}' not implemented by this server.",
-                ),
-            )
-        ]
+        return _error_result("invalid_request", f"Tool '{name}' not implemented by this server.")
 
     if not _tool_enabled(name, settings):
         env_var = "GA4MCP_" + DISABLEABLE_TOOLS[name].upper()
         emit(status="error", error_code="tool_disabled")
-        return [
-            mcp_types.TextContent(
-                type="text",
-                text=tool_error_payload(
-                    code="tool_disabled",
-                    message=f"{name} is disabled by {env_var}",
-                ),
-            )
-        ]
+        return _error_result("tool_disabled", f"{name} is disabled by {env_var}")
 
     prop_norm: str | None = None
     if name in TOOLS_REQUIRING_PROPERTY:
         prop_norm = normalize_property_id(arguments.get("property_id"))
         if not prop_norm:
             emit(status="error", error_code="invalid_property")
-            return [
-                mcp_types.TextContent(
-                    type="text",
-                    text=tool_error_payload(
-                        code="invalid_property",
-                        message="property_id is required",
-                    ),
-                )
-            ]
+            return _error_result("invalid_property", "property_id is required")
         if not property_allowed(prop_norm, settings):
             emit(status="error", error_code="unauthorized_property", property_id=prop_norm)
-            return [
-                mcp_types.TextContent(
-                    type="text",
-                    text=tool_error_payload(
-                        code="unauthorized_property",
-                        message="property_id is not allowed by server policy",
-                        extra={"property_id": prop_norm},
-                    ),
-                )
-            ]
+            return _error_result(
+                "unauthorized_property",
+                "property_id is not allowed by server policy",
+                extra={"property_id": prop_norm},
+            )
 
     ok, err_code, mutated = validate_tool_arguments(name, arguments, settings)
     if not ok:
         emit(status="error", error_code=err_code or "invalid_request", property_id=prop_norm)
-        return [
-            mcp_types.TextContent(
-                type="text",
-                text=tool_error_payload(
-                    code=err_code or "invalid_request",
-                    message="Request failed guardrail validation",
-                ),
-            )
-        ]
+        return _error_result(err_code or "invalid_request", "Request failed guardrail validation")
 
     exec_args = mutated if mutated is not None else arguments
     tool = tool_map[name]
@@ -221,12 +212,7 @@ async def call_mcp_tool(name: str, arguments: dict) -> list[mcp_types.Content]:
         return [mcp_types.TextContent(type="text", text=response_text)]
     except TimeoutError:
         emit(status="error", error_code="timeout", property_id=prop_norm)
-        return [
-            mcp_types.TextContent(
-                type="text",
-                text=tool_error_payload(code="timeout", message="Tool execution timed out"),
-            )
-        ]
+        return _error_result("timeout", "Tool execution timed out")
     except Exception as e:
         code, msg = map_exception_to_code(e)
         if code == "internal_error":
@@ -245,4 +231,4 @@ async def call_mcp_tool(name: str, arguments: dict) -> list[mcp_types.Content]:
                 }
             )
         emit(status="error", error_code=code, property_id=prop_norm)
-        return [mcp_types.TextContent(type="text", text=tool_error_payload(code=code, message=msg))]
+        return _error_result(code, msg)
