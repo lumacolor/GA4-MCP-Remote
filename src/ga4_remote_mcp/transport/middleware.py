@@ -115,6 +115,12 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Discovery metadata must be readable without credentials -- a client that
+        # cannot read it never learns how to authenticate in the first place.
+        if path.startswith("/.well-known/"):
+            await self.app(scope, receive, send)
+            return
+
         auth = _get_header(scope, "authorization") or ""
         if not _bearer_matches_authorization_header(auth, settings.bearer_token):
             rid = _get_header(scope, "x-request-id") or str(uuid.uuid4())
@@ -124,11 +130,20 @@ class BearerAuthMiddleware:
                     message="Invalid or missing bearer token",
                 )
             )
-            resp = JSONResponse(
-                body,
-                status_code=settings.bearer_failure_http_status,
-                headers={"X-Request-ID": rid},
-            )
+            headers = {"X-Request-ID": rid}
+            status = settings.bearer_failure_http_status
+            if settings.oauth_enabled:
+                # An OAuth-only client needs 401 plus a pointer to the metadata;
+                # anything else reads as "this server does not do OAuth" and it
+                # gives up. Bearer-only deployments keep their configured status
+                # so they never invite a flow this server cannot complete.
+                host = _get_header(scope, "host") or ""
+                status = 401
+                headers["WWW-Authenticate"] = (
+                    "Bearer resource_metadata="
+                    f'"https://{host}/.well-known/oauth-protected-resource"'
+                )
+            resp = JSONResponse(body, status_code=status, headers=headers)
             await resp(scope, receive, send)
             return
 

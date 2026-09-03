@@ -35,6 +35,15 @@ class Settings(BaseSettings):
             return int(v.strip())
         return v
 
+    # --- OAuth discovery (RFC 9728) ---
+    # ChatGPT only offers OAuth for custom connectors -- no static-header option --
+    # and refuses a server that does not advertise protected-resource metadata.
+    # Off by default so existing bearer-only deployments keep answering 403 and
+    # never invite a client into an OAuth flow this server cannot finish.
+    oauth_enabled: bool = False
+    oauth_issuer: str = ""
+    oauth_scopes: str = ""
+
     allowed_property_ids: str = ""
     allow_all_properties: bool = False
 
@@ -110,6 +119,13 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_oauth(self) -> Settings:
+        if self.oauth_enabled and not self.oauth_issuer.strip():
+            msg = "GA4MCP_OAUTH_ISSUER is required when GA4MCP_OAUTH_ENABLED=true"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
     def validate_dns_hosts(self) -> Settings:
         if self.enable_dns_rebinding_protection and self.env == "production":
             if not self.allowed_hosts.strip():
@@ -132,6 +148,11 @@ class Settings(BaseSettings):
                 s = s.split("/", 1)[-1].strip()
             out.add(s)
         return frozenset(out)
+
+    def parsed_oauth_scopes(self) -> list[str]:
+        if not self.oauth_scopes.strip():
+            return []
+        return [s.strip() for s in self.oauth_scopes.split(",") if s.strip()]
 
     def parsed_allowed_hosts(self) -> list[str]:
         if not self.allowed_hosts.strip():

@@ -1,4 +1,4 @@
-"""Starlette ASGI app: /health, /ready, Streamable HTTP /mcp."""
+"""Starlette ASGI app: /health, /ready, OAuth resource metadata, Streamable HTTP /mcp."""
 
 from __future__ import annotations
 
@@ -42,6 +42,35 @@ async def ready_endpoint(_: Request) -> JSONResponse:
         )
         return JSONResponse({"ok": False}, status_code=503)
     return JSONResponse({"ok": True})
+
+
+PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource"
+
+
+async def protected_resource_metadata(request: Request) -> JSONResponse:
+    """RFC 9728 protected-resource metadata.
+
+    Clients that only speak OAuth -- ChatGPT among them -- read this to find the
+    authorization server. It must be reachable without credentials, otherwise the
+    client cannot get far enough to learn how to authenticate.
+
+    ``resource`` has to match the URL the user typed into the client, so it is
+    derived from the request's own Host header rather than configured separately.
+    """
+    settings = get_settings()
+    if not settings.oauth_enabled:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    host = request.headers.get("host", "")
+    body: dict[str, object] = {
+        "resource": f"https://{host}/mcp",
+        "authorization_servers": [settings.oauth_issuer.rstrip("/")],
+        "bearer_methods_supported": ["header"],
+    }
+    scopes = settings.parsed_oauth_scopes()
+    if scopes:
+        body["scopes_supported"] = scopes
+    return JSONResponse(body)
 
 
 class McpHttpBridge:
@@ -93,6 +122,17 @@ def build_app() -> ASGIApp:
     routes = [
         Route("/health", endpoint=health_endpoint, methods=["GET", "HEAD"]),
         Route("/ready", endpoint=ready_endpoint, methods=["GET", "HEAD"]),
+        # Both shapes: clients probe the path-suffixed form first, then the bare one.
+        Route(
+            f"{PROTECTED_RESOURCE_PATH}/mcp",
+            endpoint=protected_resource_metadata,
+            methods=["GET", "HEAD"],
+        ),
+        Route(
+            PROTECTED_RESOURCE_PATH,
+            endpoint=protected_resource_metadata,
+            methods=["GET", "HEAD"],
+        ),
         Route(
             "/mcp",
             endpoint=McpHttpBridge(),
