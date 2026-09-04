@@ -27,7 +27,11 @@ from mcp.server.lowlevel import Server
 
 from ga4_remote_mcp import __version__
 from ga4_remote_mcp.config.settings import get_settings
-from ga4_remote_mcp.context import client_identifier_var, request_id_var
+from ga4_remote_mcp.context import (
+    authenticated_email_var,
+    client_identifier_var,
+    request_id_var,
+)
 from ga4_remote_mcp.errors.normalize import map_exception_to_code, tool_error_payload
 from ga4_remote_mcp.ga.tools.admin.info import (
     get_account_summaries,
@@ -156,6 +160,7 @@ async def call_mcp_tool(
             {
                 "request_id": rid,
                 "client_identifier": client_identifier_var.get(),
+                "authenticated_email": authenticated_email_var.get(),
                 "tool_name": name,
                 "property_id": property_id or "-",
                 "status": status,

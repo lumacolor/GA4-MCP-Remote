@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     oauth_enabled: bool = False
     oauth_issuer: str = ""
     oauth_scopes: str = ""
+    # Audience check: tokens must be issued for *our* client, otherwise a token
+    # the user granted to any other Google app would be accepted here.
+    oauth_client_id: str = ""
+    # Authentication establishes who somebody is; it does not entitle them to
+    # this customer's analytics. That is what the allowlist is for.
+    oauth_allowed_emails: str = ""
 
     allowed_property_ids: str = ""
     allow_all_properties: bool = False
@@ -120,8 +126,21 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_oauth(self) -> Settings:
-        if self.oauth_enabled and not self.oauth_issuer.strip():
-            msg = "GA4MCP_OAUTH_ISSUER is required when GA4MCP_OAUTH_ENABLED=true"
+        if not self.oauth_enabled:
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("GA4MCP_OAUTH_ISSUER", self.oauth_issuer),
+                ("GA4MCP_OAUTH_CLIENT_ID", self.oauth_client_id),
+                ("GA4MCP_OAUTH_ALLOWED_EMAILS", self.oauth_allowed_emails),
+            )
+            if not value.strip()
+        ]
+        if missing:
+            # Starting without these would advertise an OAuth flow that either
+            # cannot complete or, worse, would accept anyone Google authenticates.
+            msg = f"{', '.join(missing)} required when GA4MCP_OAUTH_ENABLED=true"
             raise ValueError(msg)
         return self
 
@@ -148,6 +167,13 @@ class Settings(BaseSettings):
                 s = s.split("/", 1)[-1].strip()
             out.add(s)
         return frozenset(out)
+
+    def parsed_oauth_allowed_emails(self) -> frozenset[str]:
+        if not self.oauth_allowed_emails.strip():
+            return frozenset()
+        return frozenset(
+            e.strip().lower() for e in self.oauth_allowed_emails.split(",") if e.strip()
+        )
 
     def parsed_oauth_scopes(self) -> list[str]:
         if not self.oauth_scopes.strip():

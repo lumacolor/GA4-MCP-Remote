@@ -21,13 +21,17 @@ METADATA_PATHS = [
     "/.well-known/oauth-protected-resource",
     "/.well-known/oauth-protected-resource/mcp",
 ]
-ISSUER = "https://example-tenant.eu.auth0.com"
+ISSUER = "https://accounts.google.com"
+CLIENT_ID = "123456789-abcdef.apps.googleusercontent.com"
+ALLOWED_EMAIL = "kunde@example.com"
 
 
 @pytest.fixture
 def oauth_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GA4MCP_OAUTH_ENABLED", "true")
     monkeypatch.setenv("GA4MCP_OAUTH_ISSUER", ISSUER)
+    monkeypatch.setenv("GA4MCP_OAUTH_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setenv("GA4MCP_OAUTH_ALLOWED_EMAILS", ALLOWED_EMAIL)
     monkeypatch.setenv("GA4MCP_AUTH_MODE", "bearer")
     monkeypatch.setenv("GA4MCP_BEARER_TOKEN", "static-token-for-claude")
     clear_settings_cache()
@@ -101,3 +105,18 @@ def test_static_token_still_accepted_while_oauth_enabled(oauth_on: None) -> None
             },
         )
     assert r.status_code != 401
+
+
+def test_oauth_requires_client_id_and_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Advertising OAuth without an audience check or an allowlist would accept any
+    Google-authenticated person, so the server must refuse to start instead."""
+    from ga4_remote_mcp.config.settings import Settings
+
+    monkeypatch.delenv("GA4MCP_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GA4MCP_OAUTH_ALLOWED_EMAILS", raising=False)
+    clear_settings_cache()
+    with pytest.raises(ValueError) as excinfo:
+        Settings(oauth_enabled=True, oauth_issuer=ISSUER)
+    message = str(excinfo.value)
+    assert "GA4MCP_OAUTH_CLIENT_ID" in message
+    assert "GA4MCP_OAUTH_ALLOWED_EMAILS" in message

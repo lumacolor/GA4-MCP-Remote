@@ -9,8 +9,13 @@ import uuid
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from ga4_remote_mcp.auth import verify_google_access_token
 from ga4_remote_mcp.config.settings import get_settings
-from ga4_remote_mcp.context import client_identifier_var, request_id_var
+from ga4_remote_mcp.context import (
+    authenticated_email_var,
+    client_identifier_var,
+    request_id_var,
+)
 from ga4_remote_mcp.errors.normalize import tool_error_payload
 
 
@@ -33,6 +38,14 @@ def _bearer_matches_authorization_header(header_value: str, secret: str) -> bool
         return False
     provided = parts[1].strip()
     return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _presented_bearer(header_value: str) -> str | None:
+    """Return the token from an ``Authorization: Bearer x`` header, if well-formed."""
+    parts = (header_value or "").strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip() or None
 
 
 def _get_header(scope: Scope, key: str) -> str | None:
@@ -122,7 +135,19 @@ class BearerAuthMiddleware:
             return
 
         auth = _get_header(scope, "authorization") or ""
-        if not _bearer_matches_authorization_header(auth, settings.bearer_token):
+        authorized = _bearer_matches_authorization_header(auth, settings.bearer_token)
+
+        if not authorized and settings.oauth_enabled:
+            # Second path for clients that cannot send a fixed header. Checked only
+            # after the static token fails, so the common case stays off the network.
+            presented = _presented_bearer(auth)
+            if presented:
+                email = await verify_google_access_token(presented, settings)
+                if email:
+                    authorized = True
+                    authenticated_email_var.set(email)
+
+        if not authorized:
             rid = _get_header(scope, "x-request-id") or str(uuid.uuid4())
             body = json.loads(
                 tool_error_payload(
