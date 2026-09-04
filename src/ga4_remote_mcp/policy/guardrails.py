@@ -34,7 +34,11 @@ def _max_span_days_in_ranges(
             continue
         span = abs((de - ds).days) + 1
         if span > max_days:
-            return False, f"date range exceeds GA4MCP_MAX_DATE_RANGE_DAYS ({max_days})"
+            return False, (
+                f"date range spans {span} days, which exceeds the server maximum "
+                f"of {max_days}. Split the request into several date_ranges that "
+                f"each stay within the limit."
+            )
     return True, None
 
 
@@ -42,35 +46,47 @@ def validate_tool_arguments(
     tool_name: str,
     arguments: dict[str, Any],
     settings: Settings,
-) -> tuple[bool, str | None, dict[str, Any] | None]:
+) -> tuple[bool, str | None, str | None, dict[str, Any] | None]:
     """
-    Return (ok, error_code, mutated_args).
+    Return (ok, error_code, error_message, mutated_args).
+
+    ``error_message`` names the limit that was hit. These are our own policy
+    limits, not upstream internals, and withholding them is expensive: in the
+    04.09.2026 field test a bare "Request failed guardrail validation" cost four
+    failed attempts and produced the wrong conclusion -- the caller blamed the
+    dimension it had used rather than the date range that actually breached the
+    cap.
 
     If ok, mutated_args is a copy of arguments with policy applied (or None if unchanged).
     """
     args = dict(arguments)
 
     if tool_name == "run_realtime_report" and not settings.enable_realtime:
-        return False, "tool_disabled", None
+        return False, "tool_disabled", "run_realtime_report is disabled on this server", None
 
     if tool_name == "list_google_ads_links" and not settings.enable_google_ads_links:
-        return False, "tool_disabled", None
+        return False, "tool_disabled", "list_google_ads_links is disabled on this server", None
 
     if tool_name == "run_report":
         dr = args.get("date_ranges")
         if isinstance(dr, list) and dr:
             ok, msg = _max_span_days_in_ranges(dr, settings.max_date_range_days)
             if not ok:
-                return False, "invalid_request", None
+                return False, "invalid_request", msg, None
         limit = args.get("limit")
         if limit is not None:
             try:
                 lim = int(limit)
             except (TypeError, ValueError):
-                return False, "invalid_request", None
+                return False, "invalid_request", "limit must be an integer", None
             if lim > settings.max_row_limit:
-                return False, "invalid_request", None
+                return (
+                    False,
+                    "invalid_request",
+                    f"limit {lim} exceeds the server maximum of {settings.max_row_limit}",
+                    None,
+                )
         if not settings.return_property_quota_default:
             args["return_property_quota"] = False
 
-    return True, None, args if args != arguments else None
+    return True, None, None, args if args != arguments else None

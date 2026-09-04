@@ -188,10 +188,13 @@ async def call_mcp_tool(
                 extra={"property_id": prop_norm},
             )
 
-    ok, err_code, mutated = validate_tool_arguments(name, arguments, settings)
+    ok, err_code, err_msg, mutated = validate_tool_arguments(name, arguments, settings)
     if not ok:
         emit(status="error", error_code=err_code or "invalid_request", property_id=prop_norm)
-        return _error_result(err_code or "invalid_request", "Request failed guardrail validation")
+        return _error_result(
+            err_code or "invalid_request",
+            err_msg or "Request failed guardrail validation",
+        )
 
     exec_args = mutated if mutated is not None else arguments
     tool = tool_map[name]

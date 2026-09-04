@@ -24,6 +24,15 @@ def map_exception_to_code(exc: BaseException) -> tuple[str, str]:
     (:data:`INTERNAL_ERROR_MESSAGE`) so that internal stack traces / settings
     validation strings / SDK error chatter are not leaked to MCP clients.
     """
+    if isinstance(exc, google_exceptions.InvalidArgument):
+        # The Data API explains exactly what is wrong with a field name and often
+        # suggests the right one ("Did you mean purchaserRate? Field purchases is
+        # not a valid metric."). Collapsing that into "Internal server error" left
+        # clients guessing: in the 04.09.2026 field test a model mistook an invalid
+        # dimension name for a data problem and told the customer their tracking
+        # was broken. Nothing here is internal -- the valid names are published in
+        # Google's own schema docs.
+        return "invalid_argument", str(exc)
     if isinstance(exc, google_exceptions.ResourceExhausted):
         return "quota_exceeded", str(exc)
     if isinstance(exc, google_exceptions.Unauthenticated):
