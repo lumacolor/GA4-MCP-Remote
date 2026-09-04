@@ -45,11 +45,13 @@ async def verify_google_access_token(token: str, settings: Settings) -> str | No
       any application would be accepted, so a user could authorise some unrelated
       app and replay its token here.
     * the address is verified by Google.
-    * the address appears in this service's allowlist. Authentication says who
-      somebody is; it does not say they may read this customer's analytics.
+    * the address appears in this service's allowlist, either by name or through a
+      whole-domain entry. Authentication says who somebody is; it does not say
+      they may read this customer's analytics.
     """
     allowed = settings.parsed_oauth_allowed_emails()
-    if not allowed or not settings.oauth_client_id.strip():
+    allowed_domains = settings.parsed_oauth_allowed_domains()
+    if not (allowed or allowed_domains) or not settings.oauth_client_id.strip():
         # Fail closed: an OAuth deployment without these is misconfigured, and
         # settings validation already refuses to start in that state.
         return None
@@ -73,7 +75,10 @@ async def verify_google_access_token(token: str, settings: Settings) -> str | No
         aud_ok = info.get("aud") == settings.oauth_client_id.strip()
         verified = str(info.get("email_verified", "")).lower() == "true"
         candidate = (info.get("email") or "").strip().lower()
-        if aud_ok and verified and candidate in allowed:
+        # endswith on "@domain" rather than a split: "@2grow.de" must not match
+        # "someone@evil-2grow.de", and the leading "@" is what guarantees that.
+        domain_ok = any(candidate.endswith(d) for d in allowed_domains)
+        if aud_ok and verified and (candidate in allowed or domain_ok):
             email = candidate
 
     _cache[key] = (now + _CACHE_TTL_SECONDS, email)

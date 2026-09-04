@@ -169,11 +169,23 @@ class Settings(BaseSettings):
         return frozenset(out)
 
     def parsed_oauth_allowed_emails(self) -> frozenset[str]:
+        """Individual addresses from the allowlist."""
+        return frozenset(e for e in self._oauth_allowlist_entries() if not e.startswith("@"))
+
+    def parsed_oauth_allowed_domains(self) -> frozenset[str]:
+        """Whole-domain entries, written as ``@example.com``.
+
+        Operators and agencies change staff, and naming people individually would
+        force a redeploy of every service they look after. Customers are one to
+        three addresses that rarely change, so those stay individual -- narrower,
+        and narrower is better where it costs nothing.
+        """
+        return frozenset(e for e in self._oauth_allowlist_entries() if e.startswith("@"))
+
+    def _oauth_allowlist_entries(self) -> list[str]:
         if not self.oauth_allowed_emails.strip():
-            return frozenset()
-        return frozenset(
-            e.strip().lower() for e in self.oauth_allowed_emails.split(",") if e.strip()
-        )
+            return []
+        return [e.strip().lower() for e in self.oauth_allowed_emails.split(",") if e.strip()]
 
     def parsed_oauth_scopes(self) -> list[str]:
         if not self.oauth_scopes.strip():
